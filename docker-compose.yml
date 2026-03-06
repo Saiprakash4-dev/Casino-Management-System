@@ -1,0 +1,55 @@
+version: '3.9'
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    depends_on:
+      - zookeeper
+    ports:
+      - '9092:9092'
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/gateway.Dockerfile
+    ports:
+      - '4000:4000'
+
+  auth-service:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/auth-service.Dockerfile
+    ports:
+      - '4001:4001'
+
+  game-service:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/game-service.Dockerfile
+    ports:
+      - '4002:4002'
+
+  wallet-service:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/wallet-service.Dockerfile
+    ports:
+      - '4003:4003'
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/notification-service.Dockerfile
+    ports:
+      - '4004:4004'
