@@ -1,57 +1,33 @@
-# Casino Demo Frontend (Dummy Money)
+# Casino Management System (Monorepo)
 
-React + TypeScript frontend for a dummy-money casino demo using GraphQL BFF (Apollo Client), JWT auth with refresh flow, and SSE realtime updates.
+A full-stack microservices demo with a React + TypeScript frontend, GraphQL BFF gateway, domain services, and Kafka-ready infrastructure.
 
-## Features
+## Structure
 
-- Protected routes + ADMIN route guard
-- Apollo cache as server-state source of truth
-- UI-only Zustand store (selected bet amount + toasts)
-- Access token in memory + refresh token via httpOnly cookie (expected backend behavior)
-- SSE realtime event handling (`walletUpdated`, `betResolved`, `notificationReceived`)
-- Error UX with correlation ID banner support
-- Optimistic wallet crediting and bet acknowledgement
+- `apps/frontend`: UI, GraphQL client, auth/realtime providers, and feature pages.
+- `services/*`: API gateway, auth, game, wallet, and notification services.
+- `packages/*`: shared types, config/logger helpers, and Kafka utilities.
+- `infrastructure/*`: Dockerfiles + Kafka setup scripts.
+- `scripts/*`: local helper scripts.
 
-## Folder Structure
+## Quick Start
 
-```text
-src/
-  app/
-    App.tsx
-    routes.tsx
-    providers/
-    pages/
-    components/
-  graphql/
-  services/
-  state/
-  utils/
-```
+1. Copy envs
+   - `cp .env.example .env`
+2. Install dependencies
+   - `npm install`
+3. Start frontend
+   - `npm run dev`
+4. Start full stack with containers
+   - `docker compose up --build`
 
-## Environment Variables
+## Architecture
 
-Create a `.env` file:
-
-```bash
-VITE_GRAPHQL_API_URL=http://localhost:4000/graphql
-VITE_REFRESH_URL=http://localhost:4000/auth/refresh
-VITE_REALTIME_URL=http://localhost:4000/events
-```
-
-## Run locally
-
-```bash
-npm install
-npm run dev
-```
-
-## Build
-
-```bash
-npm run build
-```
+- **Frontend** calls **API Gateway** only.
+- **API Gateway** orchestrates auth/game/wallet services via GraphQL.
+- **Game & Wallet services** publish events.
+- **Notification service** consumes events and emits real-time updates.
 
 ## Notes
 
-- Dummy money only. No real-money payment/payout integration.
-- GraphQL operations are intentionally schema-agnostic stubs and may need field alignment with your backend schema.
+This scaffold is intentionally lightweight so you can expand each service into production-grade modules (DB adapters, auth hardening, observability, retries, and CI/CD).
