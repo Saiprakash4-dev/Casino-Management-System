@@ -5,6 +5,11 @@ export const typeDefs = `
     ODD_EVEN
   }
 
+  enum RoundStatus {
+    BETTING
+    SETTLING
+  }
+
   type User {
     id: ID!
     email: String!
@@ -36,17 +41,48 @@ export const typeDefs = `
 
   type Bet {
     id: ID!
+    roundId: ID!
     amount: Float!
     status: String!
-    payout: Float!
-    netChange: Float!
+    payout: Float
+    netChange: Float
     betType: BetType!
     betValue: String!
+    winningNumber: Int
+    winningColor: String
+    multiplier: Float
+    createdAt: String!
+    resolvedAt: String
+    gameId: ID!
+  }
+
+  type GameRound {
+    id: ID!
+    gameId: ID!
+    status: RoundStatus!
+    startsAt: String!
+    endsAt: String!
+    timeRemainingSec: Int!
+    totalBets: Int!
+    pot: Float!
+  }
+
+  type GameResult {
+    roundId: ID!
+    gameId: ID!
     winningNumber: Int!
     winningColor: String!
-    multiplier: Float!
-    createdAt: String!
-    gameId: ID!
+    resolvedAt: String!
+    totalBets: Int!
+    totalWagered: Float!
+    totalPayout: Float!
+  }
+
+  type RouletteSnapshot {
+    activeRound: GameRound
+    recentResults: [GameResult!]!
+    myBets: [Bet!]!
+    wallet: Wallet!
   }
 
   type LoginResponse {
@@ -61,6 +97,9 @@ export const typeDefs = `
     walletBalance: Wallet
     transactions(page: Int, size: Int): [Transaction!]!
     betHistory(gameId: ID!, page: Int, size: Int): [Bet!]!
+    activeGameRound(gameId: ID!): GameRound
+    recentGameResults(gameId: ID!, limit: Int): [GameResult!]!
+    rouletteSnapshot(gameId: ID!): RouletteSnapshot!
   }
 
   type Mutation {

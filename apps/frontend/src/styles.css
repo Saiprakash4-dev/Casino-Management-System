@@ -344,7 +344,7 @@ a {
 
 .roulette-wheel-shell {
   position: relative;
-  width: min(42vh, 430px, 100%);
+  width: min(55vh, 560px, 100%);
   aspect-ratio: 1;
   border-radius: 50%;
   padding: 8px;
@@ -375,14 +375,14 @@ a {
   position: absolute;
   transform: translate(-50%, -50%);
   z-index: 4;
-  width: 1.5rem;
-  height: 1.5rem;
+  width: 1.2rem;
+  height: 1.2rem;
   display: grid;
   place-items: center;
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.3);
   background: rgba(5, 5, 5, 0.58);
-  font-size: 0.64rem;
+  font-size: 0.52rem;
   font-family: 'Space Grotesk', sans-serif;
   font-weight: 700;
   text-shadow: 0 0 8px rgba(0, 0, 0, 0.7);
@@ -669,6 +669,72 @@ th {
   color: var(--muted);
 }
 
+.toast-center {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 40;
+  width: min(360px, calc(100vw - 1.5rem));
+  display: grid;
+  gap: 0.6rem;
+}
+
+.toast-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  padding: 0.72rem 0.75rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.36);
+  background: linear-gradient(165deg, rgba(13, 27, 24, 0.95), rgba(9, 18, 16, 0.95));
+}
+
+.toast-item.success {
+  border-color: rgba(117, 215, 148, 0.42);
+}
+
+.toast-item.error {
+  border-color: rgba(240, 98, 98, 0.45);
+}
+
+.toast-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.toast-title {
+  margin: 0;
+  font-size: 0.86rem;
+  font-weight: 700;
+  font-family: 'Space Grotesk', sans-serif;
+}
+
+.toast-message {
+  margin: 0.32rem 0 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+  line-height: 1.38;
+}
+
+.toast-close {
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  border-radius: 8px;
+  width: 1.6rem;
+  height: 1.6rem;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  line-height: 1;
+}
+
+.toast-close:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
 @media (max-width: 1024px) {
   .nav {
     grid-template-columns: 1fr;
@@ -713,6 +779,13 @@ th {
     padding: 0.85rem;
   }
 
+  .toast-center {
+    right: 0.55rem;
+    left: 0.55rem;
+    bottom: 0.55rem;
+    width: auto;
+  }
+
   .profile-stats {
     grid-template-columns: 1fr;
   }
@@ -723,13 +796,13 @@ th {
   }
 
   .roulette-wheel-shell {
-    width: min(300px, 100%);
+    width: min(360px, 100%);
   }
 
   .wheel-number {
-    width: 1.2rem;
-    height: 1.2rem;
-    font-size: 0.52rem;
+    width: 0.9rem;
+    height: 0.9rem;
+    font-size: 0.42rem;
   }
 
   .wheel-ball {

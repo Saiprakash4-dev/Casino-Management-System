@@ -7,13 +7,13 @@ import { ROULETTE_GAME_ID } from '../../utils/constants';
 type HistoryBet = {
   id: string;
   amount: number;
-  status: 'WON' | 'LOST';
-  payout: number;
-  netChange: number;
+  status: 'PENDING' | 'WON' | 'LOST';
+  payout: number | null;
+  netChange: number | null;
   betType: string;
   betValue: string;
-  winningNumber: number;
-  winningColor: string;
+  winningNumber: number | null;
+  winningColor: string | null;
   createdAt: string;
 };
 
@@ -33,7 +33,7 @@ export function ProfilePage() {
     const totalBets = bets.length;
     const wins = bets.filter((bet) => bet.status === 'WON').length;
     const totalWagered = bets.reduce((sum, bet) => sum + bet.amount, 0);
-    const net = bets.reduce((sum, bet) => sum + bet.netChange, 0);
+    const net = bets.reduce((sum, bet) => sum + (bet.netChange ?? 0), 0);
     const winRate = totalBets ? (wins / totalBets) * 100 : 0;
 
     return { totalBets, wins, totalWagered, net, winRate };
@@ -91,11 +91,19 @@ export function ProfilePage() {
                     {bet.betType} {bet.betValue}
                   </p>
                   <p className="muted-text">
-                    Wheel: {bet.winningNumber} {bet.winningColor}
+                    {bet.status === 'PENDING'
+                      ? 'Waiting for round resolution'
+                      : `Wheel: ${bet.winningNumber} ${bet.winningColor}`}
                   </p>
                 </div>
                 <div className="history-amount">
-                  <span className={bet.netChange >= 0 ? 'win' : 'loss'}>{formatCurrency(bet.netChange)}</span>
+                  {bet.status === 'PENDING' ? (
+                    <span className="muted-text">Pending</span>
+                  ) : (
+                    <span className={(bet.netChange ?? 0) >= 0 ? 'win' : 'loss'}>
+                      {formatCurrency(bet.netChange ?? 0)}
+                    </span>
+                  )}
                 </div>
               </div>
             ))

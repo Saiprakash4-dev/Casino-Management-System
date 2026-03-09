@@ -24,8 +24,12 @@ services:
     build:
       context: .
       dockerfile: infrastructure/docker/gateway.Dockerfile
+    depends_on:
+      - kafka
     ports:
       - '4000:4000'
+    environment:
+      KAFKA_BROKER: kafka:9092
 
   auth-service:
     build:

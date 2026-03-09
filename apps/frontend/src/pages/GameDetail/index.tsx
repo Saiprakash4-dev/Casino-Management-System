@@ -1,23 +1,85 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { useMutation, useQuery } from '@apollo/client';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useApolloClient, useMutation } from '@apollo/client';
 import { PLACE_BET_MUTATION } from '../../graphql/mutations';
-import { BET_HISTORY_QUERY, WALLET_BALANCE_QUERY } from '../../graphql/queries';
+import {
+  ACTIVE_GAME_ROUND_QUERY,
+  BET_HISTORY_QUERY,
+  RECENT_GAME_RESULTS_QUERY,
+  ROULETTE_SNAPSHOT_QUERY,
+  WALLET_BALANCE_QUERY,
+} from '../../graphql/queries';
 import { formatCurrency } from '../../utils/format';
 import { ROULETTE_GAME_ID } from '../../utils/constants';
+import { useRealtime } from '../../app/providers/RealtimeProvider';
+import { connectRealtime, RealtimeMessage } from '../../services/realtime';
 
 type BetType = 'NUMBER' | 'COLOR' | 'ODD_EVEN';
-type HistoryBet = {
+type RoundStatus = 'BETTING' | 'SETTLING';
+type RouletteColor = 'RED' | 'BLACK' | 'GREEN';
+
+type UserBet = {
   id: string;
+  roundId: string;
   amount: number;
-  status: 'WON' | 'LOST';
-  payout: number;
-  netChange: number;
+  status: 'PENDING' | 'WON' | 'LOST';
+  payout: number | null;
+  netChange: number | null;
   betType: BetType;
   betValue: string;
-  winningNumber: number;
-  winningColor: 'RED' | 'BLACK' | 'GREEN';
-  multiplier: number;
+  winningNumber: number | null;
+  winningColor: RouletteColor | null;
+  multiplier: number | null;
   createdAt: string;
+  resolvedAt: string | null;
+};
+
+type ActiveRound = {
+  id: string;
+  gameId: string;
+  status: RoundStatus;
+  startsAt: string;
+  endsAt: string;
+  timeRemainingSec: number;
+  totalBets: number;
+  pot: number;
+};
+
+type GameResult = {
+  roundId: string;
+  gameId: string;
+  winningNumber: number;
+  winningColor: RouletteColor;
+  resolvedAt: string;
+  totalBets: number;
+  totalWagered: number;
+  totalPayout: number;
+};
+
+type SnapshotPayload = {
+  activeRound: ActiveRound | null;
+  recentResults: GameResult[];
+  myBets: UserBet[];
+  wallet: { id: string; amount: number; currency: string };
+};
+
+type RouletteSnapshotQuery = {
+  rouletteSnapshot: SnapshotPayload;
+};
+
+type WalletBalanceQuery = {
+  walletBalance: { id: string; amount: number; currency: string } | null;
+};
+
+type ActiveGameRoundQuery = {
+  activeGameRound: ActiveRound | null;
+};
+
+type RecentGameResultsQuery = {
+  recentGameResults: GameResult[];
+};
+
+type BetHistoryQuery = {
+  betHistory: UserBet[];
 };
 
 type WheelPocket = {
@@ -35,7 +97,8 @@ const ROULETTE_WHEEL_SEQUENCE = [
 const SEGMENT_ANGLE = 360 / ROULETTE_WHEEL_SEQUENCE.length;
 const SPIN_DURATION_MS = 4600;
 const SPIN_SETTLE_DELAY_MS = SPIN_DURATION_MS + 140;
-const POCKET_LABEL_RADIUS = 42.5;
+const POCKET_LABEL_RADIUS = 46;
+const WALLET_CACHE_KEY = 'roulette:lastKnownWallet';
 
 const numberClass = (value: number): 'red' | 'black' | 'green' => {
   if (value === 0) return 'green';
@@ -48,28 +111,165 @@ const wheelColor = (value: number) => {
   return numberClass(value) === 'red' ? '#8e2a2a' : '#111111';
 };
 
+const normalizeBetValue = (type: BetType, rawValue: string) => {
+  if (type === 'NUMBER') {
+    return String(Math.floor(Number(rawValue) || 0));
+  }
+  return rawValue.toUpperCase();
+};
+
+const getStaticRotationForNumber = (pockets: WheelPocket[], winningNumber: number) => {
+  const pocket = pockets.find((item) => item.value === winningNumber);
+  const targetPocketAngle = pocket?.angle ?? 0;
+  return ((360 - targetPocketAngle) % 360 + 360) % 360;
+};
+
+const computeTargetRotation = (pockets: WheelPocket[], currentRotation: number, winningNumber: number) => {
+  const pocket = pockets.find((item) => item.value === winningNumber);
+  const targetPocketAngle = pocket?.angle ?? 0;
+  const currentNormalized = ((currentRotation % 360) + 360) % 360;
+  const desiredNormalized = ((360 - targetPocketAngle) % 360 + 360) % 360;
+  let delta = desiredNormalized - currentNormalized;
+  if (delta < 0) delta += 360;
+  const fullTurns = 360 * (8 + Math.floor(Math.random() * 2));
+  return currentRotation + fullTurns + delta;
+};
+
+const computeBallTargetRotation = (currentBallRotation: number) => {
+  const travelTurns = 360 * (10 + Math.floor(Math.random() * 2));
+  return currentBallRotation - travelTurns;
+};
+
 export function GameDetailPage() {
+  const { notify } = useRealtime();
   const [betType, setBetType] = useState<BetType>('COLOR');
   const [betValue, setBetValue] = useState('RED');
   const [stakeInput, setStakeInput] = useState('25');
   const [error, setError] = useState<string | null>(null);
-  const [lastResult, setLastResult] = useState<HistoryBet | null>(null);
+  const [feedback, setFeedback] = useState<string | null>(null);
   const [isSpinning, setIsSpinning] = useState(false);
   const [wheelRotation, setWheelRotation] = useState(0);
   const [ballOrbitRotation, setBallOrbitRotation] = useState(0);
+  const [lastResult, setLastResult] = useState<GameResult | null>(null);
+  const [wsActiveRound, setWsActiveRound] = useState<ActiveRound | null>(null);
+  const [wsRecentResults, setWsRecentResults] = useState<GameResult[] | null>(null);
+  const [wsMyBets, setWsMyBets] = useState<UserBet[] | null>(null);
+  const [wsBalance, setWsBalance] = useState<number | null>(() => {
+    const raw = localStorage.getItem(WALLET_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : null;
+  });
+  const [clockMs, setClockMs] = useState(() => Date.now());
+  const [realtimeConnected, setRealtimeConnected] = useState(false);
+  const [supportsSnapshot, setSupportsSnapshot] = useState<boolean | null>(null);
+
   const spinTimeoutRef = useRef<number | null>(null);
+  const hydratedRoundRef = useRef(false);
+  const lastAnimatedRoundIdRef = useRef<string | null>(null);
+  const hydratedBetNotificationsRef = useRef(false);
+  const notifiedBetIdsRef = useRef<Set<string>>(new Set());
+  const pendingBetNotificationsRef = useRef<Map<string, UserBet>>(new Map());
+  const latestBetsRef = useRef<UserBet[]>([]);
+  const syncStateRef = useRef<() => Promise<void>>(async () => undefined);
+  const settlementSyncedRoundIdsRef = useRef<Set<string>>(new Set());
+  const apolloClient = useApolloClient();
 
-  const { data: walletData, refetch: refetchWallet } = useQuery(WALLET_BALANCE_QUERY, {
-    fetchPolicy: 'network-only',
-  });
-  const { data: historyData, refetch: refetchHistory } = useQuery(BET_HISTORY_QUERY, {
-    variables: { gameId: ROULETTE_GAME_ID, page: 1, size: 8 },
-    fetchPolicy: 'network-only',
-  });
-
-  const balance = walletData?.walletBalance?.amount ?? 0;
-  const history = (historyData?.betHistory ?? []) as HistoryBet[];
   const [placeBet, { loading: placingBet }] = useMutation(PLACE_BET_MUTATION);
+
+  const setWalletAmount = useCallback((amount: number | null) => {
+    setWsBalance(amount);
+    if (amount === null || !Number.isFinite(amount)) return;
+    localStorage.setItem(WALLET_CACHE_KEY, String(amount));
+  }, []);
+
+  const applySnapshot = useCallback((snapshot: SnapshotPayload) => {
+    setWsActiveRound(snapshot.activeRound ?? null);
+    setWsRecentResults(snapshot.recentResults ?? []);
+    setWsMyBets(snapshot.myBets ?? []);
+    setWalletAmount(snapshot.wallet?.amount ?? null);
+  }, [setWalletAmount]);
+
+  const fetchLegacyState = useCallback(async () => {
+    try {
+      const [walletResponse, roundResponse, resultsResponse, betsResponse] = await Promise.all([
+        apolloClient.query<WalletBalanceQuery>({
+          query: WALLET_BALANCE_QUERY,
+          fetchPolicy: 'network-only',
+        }),
+        apolloClient.query<ActiveGameRoundQuery>({
+          query: ACTIVE_GAME_ROUND_QUERY,
+          variables: { gameId: ROULETTE_GAME_ID },
+          fetchPolicy: 'network-only',
+        }),
+        apolloClient.query<RecentGameResultsQuery>({
+          query: RECENT_GAME_RESULTS_QUERY,
+          variables: { gameId: ROULETTE_GAME_ID, limit: 5 },
+          fetchPolicy: 'network-only',
+        }),
+        apolloClient.query<BetHistoryQuery>({
+          query: BET_HISTORY_QUERY,
+          variables: { gameId: ROULETTE_GAME_ID, page: 1, size: 5 },
+          fetchPolicy: 'network-only',
+        }),
+      ]);
+
+      const walletAmount = walletResponse.data?.walletBalance?.amount;
+      if (walletAmount !== undefined) {
+        setWalletAmount(walletAmount);
+      }
+      setWsActiveRound(roundResponse.data?.activeGameRound ?? null);
+      setWsRecentResults(resultsResponse.data?.recentGameResults ?? []);
+      setWsMyBets(betsResponse.data?.betHistory ?? []);
+      return true;
+    } catch {
+      return false;
+    }
+  }, [apolloClient, setWalletAmount]);
+
+  const fetchSnapshot = useCallback(async () => {
+    try {
+      const response = await apolloClient.query<RouletteSnapshotQuery>({
+        query: ROULETTE_SNAPSHOT_QUERY,
+        variables: { gameId: ROULETTE_GAME_ID },
+        fetchPolicy: 'network-only',
+      });
+      if (response.data?.rouletteSnapshot) {
+        applySnapshot(response.data.rouletteSnapshot);
+        if (supportsSnapshot !== true) {
+          setSupportsSnapshot(true);
+        }
+      }
+      return true;
+    } catch {
+      if (supportsSnapshot !== false) {
+        setSupportsSnapshot(false);
+      }
+      return fetchLegacyState();
+    }
+  }, [apolloClient, applySnapshot, fetchLegacyState, supportsSnapshot]);
+
+  const syncState = useCallback(async () => {
+    if (supportsSnapshot === false) {
+      await fetchLegacyState();
+      return;
+    }
+    await fetchSnapshot();
+  }, [fetchLegacyState, fetchSnapshot, supportsSnapshot]);
+
+  const balance = wsBalance ?? 0;
+  const activeRound = wsActiveRound;
+  const recentResults = wsRecentResults ?? [];
+  const myBets = wsMyBets ?? [];
+  const timeRemainingSec = activeRound ? Math.max(0, Math.ceil((Date.parse(activeRound.endsAt) - clockMs) / 1000)) : 0;
+
+  useEffect(() => {
+    latestBetsRef.current = myBets;
+  }, [myBets]);
+
+  useEffect(() => {
+    syncStateRef.current = syncState;
+  }, [syncState]);
 
   const quickStakes = useMemo(() => [10, 25, 50, 100, 250], []);
   const wheelPockets = useMemo<WheelPocket[]>(
@@ -93,6 +293,111 @@ export function GameDetailPage() {
   }, []);
 
   useEffect(() => {
+    const timer = window.setInterval(() => {
+      setClockMs(Date.now());
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    void syncState();
+  }, [syncState]);
+
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+
+    const disconnect = connectRealtime({
+      token,
+      onOpen: () => {
+        setRealtimeConnected(true);
+      },
+      onClose: () => {
+        setRealtimeConnected(false);
+      },
+      onMessage: (message: RealtimeMessage) => {
+        if (message.type === 'snapshot') {
+          applySnapshot(message.payload as SnapshotPayload);
+          return;
+        }
+
+        if (message.type === 'round:update') {
+          setWsActiveRound((message.payload ?? null) as ActiveRound | null);
+          return;
+        }
+
+        if (message.type === 'round:result') {
+          const incoming = message.payload as GameResult;
+          setWsRecentResults((current) => {
+            const existing = current ?? [];
+            const deduped = [incoming, ...existing.filter((entry) => entry.roundId !== incoming.roundId)];
+            return deduped.slice(0, 5);
+          });
+
+          const hadPendingBetInRound = latestBetsRef.current.some(
+            (bet) => bet.roundId === incoming.roundId && bet.status === 'PENDING',
+          );
+          if (hadPendingBetInRound && !settlementSyncedRoundIdsRef.current.has(incoming.roundId)) {
+            settlementSyncedRoundIdsRef.current.add(incoming.roundId);
+            window.setTimeout(() => {
+              void syncStateRef.current();
+            }, SPIN_SETTLE_DELAY_MS + 240);
+          }
+          return;
+        }
+
+        if (message.type === 'bet:update') {
+          const incoming = message.payload as UserBet;
+          setWsMyBets((current) => {
+            const existing = current ?? [];
+            const deduped = [incoming, ...existing.filter((entry) => entry.id !== incoming.id)];
+            return deduped.slice(0, 5);
+          });
+          return;
+        }
+
+        if (message.type === 'wallet:update') {
+          setWalletAmount(message.payload.amount);
+          return;
+        }
+
+        if (message.type === 'session:expired') {
+          localStorage.removeItem('token');
+          localStorage.removeItem(WALLET_CACHE_KEY);
+          window.location.replace('/');
+        }
+      },
+    });
+
+    return disconnect;
+  }, [applySnapshot, setWalletAmount]);
+
+  useEffect(() => {
+    if (realtimeConnected) return;
+
+    const fallbackInterval = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      void syncState();
+    }, 15000);
+
+    return () => window.clearInterval(fallbackInterval);
+  }, [realtimeConnected, syncState]);
+
+  const emitBetResultNotification = useCallback(
+    (bet: UserBet) => {
+      const won = (bet.netChange ?? 0) >= 0;
+      notify({
+        title: `Round ${bet.roundId} Result`,
+        tone: won ? 'success' : 'error',
+        message: won
+          ? `You won ${formatCurrency(bet.netChange ?? 0)} on ${bet.betType} ${bet.betValue}.`
+          : `You lost ${formatCurrency(Math.abs(bet.netChange ?? 0))} on ${bet.betType} ${bet.betValue}.`,
+      });
+    },
+    [notify],
+  );
+
+  useEffect(() => {
     return () => {
       if (spinTimeoutRef.current !== null) {
         window.clearTimeout(spinTimeoutRef.current);
@@ -100,30 +405,103 @@ export function GameDetailPage() {
     };
   }, []);
 
+  useEffect(() => {
+    const latest = recentResults[0];
+    if (!latest) return;
+
+    if (!hydratedRoundRef.current) {
+      hydratedRoundRef.current = true;
+      lastAnimatedRoundIdRef.current = latest.roundId;
+      setLastResult(latest);
+      setWheelRotation(getStaticRotationForNumber(wheelPockets, latest.winningNumber));
+      return;
+    }
+
+    if (latest.roundId === lastAnimatedRoundIdRef.current) return;
+
+    lastAnimatedRoundIdRef.current = latest.roundId;
+    setIsSpinning(true);
+    setError(null);
+    setFeedback(`Round ${latest.roundId} resolved. Spinning wheel to result...`);
+
+    setWheelRotation((current) => computeTargetRotation(wheelPockets, current, latest.winningNumber));
+    setBallOrbitRotation((current) => computeBallTargetRotation(current));
+
+    if (spinTimeoutRef.current !== null) {
+      window.clearTimeout(spinTimeoutRef.current);
+    }
+    spinTimeoutRef.current = window.setTimeout(() => {
+      setLastResult(latest);
+      setIsSpinning(false);
+      setFeedback(null);
+    }, SPIN_SETTLE_DELAY_MS);
+  }, [recentResults, wheelPockets]);
+
+  useEffect(() => {
+    if (!myBets.length) {
+      return;
+    }
+
+    if (!hydratedBetNotificationsRef.current) {
+      hydratedBetNotificationsRef.current = true;
+      myBets.forEach((bet) => {
+        if (bet.status !== 'PENDING') {
+          notifiedBetIdsRef.current.add(bet.id);
+        }
+      });
+      return;
+    }
+
+    myBets.forEach((bet) => {
+      if (bet.status === 'PENDING') {
+        return;
+      }
+      if (notifiedBetIdsRef.current.has(bet.id)) {
+        return;
+      }
+
+      notifiedBetIdsRef.current.add(bet.id);
+      const shouldQueueUntilSpinCompletes = isSpinning || !lastResult || bet.roundId !== lastResult.roundId;
+      if (shouldQueueUntilSpinCompletes) {
+        pendingBetNotificationsRef.current.set(bet.id, bet);
+        return;
+      }
+
+      emitBetResultNotification(bet);
+    });
+  }, [emitBetResultNotification, isSpinning, lastResult, myBets]);
+
+  useEffect(() => {
+    if (isSpinning || !lastResult || pendingBetNotificationsRef.current.size === 0) {
+      return;
+    }
+
+    const idsToNotify: string[] = [];
+    for (const [id, bet] of pendingBetNotificationsRef.current.entries()) {
+      if (bet.roundId === lastResult.roundId) {
+        idsToNotify.push(id);
+      }
+    }
+
+    idsToNotify.forEach((id) => {
+      const bet = pendingBetNotificationsRef.current.get(id);
+      if (!bet) {
+        return;
+      }
+      emitBetResultNotification(bet);
+      pendingBetNotificationsRef.current.delete(id);
+    });
+  }, [emitBetResultNotification, isSpinning, lastResult]);
+
   const resetBetValueForType = (type: BetType) => {
     if (type === 'NUMBER') setBetValue('7');
     if (type === 'COLOR') setBetValue('RED');
     if (type === 'ODD_EVEN') setBetValue('ODD');
   };
 
-  const getTargetRotation = (winningNumber: number) => {
-    const pocket = wheelPockets.find((item) => item.value === winningNumber);
-    const targetPocketAngle = pocket?.angle ?? 0;
-    const currentNormalized = ((wheelRotation % 360) + 360) % 360;
-    const desiredNormalized = ((360 - targetPocketAngle) % 360 + 360) % 360;
-    let delta = desiredNormalized - currentNormalized;
-    if (delta < 0) delta += 360;
-    const fullTurns = 360 * (8 + Math.floor(Math.random() * 2));
-    return wheelRotation + fullTurns + delta;
-  };
-
-  const getBallTargetRotation = () => {
-    const travelTurns = 360 * (10 + Math.floor(Math.random() * 2));
-    return ballOrbitRotation - travelTurns;
-  };
-
-  const handlePlay = async () => {
-    if (isSpinning || placingBet) {
+  const handlePlaceBet = async () => {
+    if (!activeRound || activeRound.status !== 'BETTING') {
+      setError('Round is settling. Wait for the next round to open.');
       return;
     }
 
@@ -134,8 +512,7 @@ export function GameDetailPage() {
     }
 
     setError(null);
-    setIsSpinning(true);
-    setLastResult(null);
+    setFeedback(null);
 
     try {
       const response = await placeBet({
@@ -143,28 +520,21 @@ export function GameDetailPage() {
           gameId: ROULETTE_GAME_ID,
           amount,
           betType,
-          betValue: betType === 'NUMBER' ? String(Math.floor(Number(betValue) || 0)) : betValue,
+          betValue: normalizeBetValue(betType, betValue),
         },
       });
 
-      const roundResult = response.data?.placeBet as HistoryBet | undefined;
-      if (!roundResult) {
-        throw new Error('No spin result returned from server');
+      const placedBet = response.data?.placeBet as UserBet | undefined;
+      if (!placedBet) {
+        throw new Error('Bet was not accepted');
       }
 
-      setWheelRotation(getTargetRotation(roundResult.winningNumber));
-      setBallOrbitRotation(getBallTargetRotation());
-
-      await new Promise<void>((resolve) => {
-        spinTimeoutRef.current = window.setTimeout(() => resolve(), SPIN_SETTLE_DELAY_MS);
-      });
-
-      setLastResult(roundResult);
-      await Promise.all([refetchWallet(), refetchHistory()]);
-    } catch (mutationError: any) {
-      setError(mutationError.message || 'Unable to place bet');
-    } finally {
-      setIsSpinning(false);
+      setFeedback(`Bet accepted for round ${placedBet.roundId}. Waiting for spin.`);
+      if (!realtimeConnected) {
+        await syncState();
+      }
+    } catch (placeError: any) {
+      setError(placeError.message || 'Unable to place bet');
     }
   };
 
@@ -174,9 +544,7 @@ export function GameDetailPage() {
         <div className="card hero-card">
           <p className="eyebrow">Live Table</p>
           <h2>Russian Roulette</h2>
-          <p className="muted-text">
-            Choose a number, color, or odd/even lane. Press <strong>Place Bet and Play</strong> to spin.
-          </p>
+          <p className="muted-text">One shared game spins every minute. All logged-in players bet on the same round.</p>
           <div className="wheel-stage">
             <div className="wheel-pointer" />
             <div className="roulette-wheel-shell">
@@ -200,12 +568,26 @@ export function GameDetailPage() {
             </div>
           </div>
         </div>
+
         <article className="card control-card">
           <div className="balance-inline">
             <p className="eyebrow">Available Funds</p>
             <h3>{formatCurrency(balance)}</h3>
-            <p className="muted-text">Table limits: $10 to $1,000 per spin.</p>
+            {activeRound ? (
+              <>
+                <p className="muted-text">Round: {activeRound.id}</p>
+                <p className="muted-text">
+                  Status: {activeRound.status} | Next spin in {timeRemainingSec}s
+                </p>
+                <p className="muted-text">
+                  Pot: {formatCurrency(activeRound.pot)} | Bets: {activeRound.totalBets}
+                </p>
+              </>
+            ) : (
+              <p className="muted-text">Waiting for logged-in players to start the next round.</p>
+            )}
           </div>
+
           <h3>Build Your Bet</h3>
           <div className="bet-type-row">
             {(['COLOR', 'NUMBER', 'ODD_EVEN'] as BetType[]).map((type) => (
@@ -285,56 +667,87 @@ export function GameDetailPage() {
               </button>
             ))}
           </div>
+
           {error ? <p className="error-text">{error}</p> : null}
-          <button className="btn play-btn" type="button" disabled={placingBet || isSpinning} onClick={handlePlay}>
-            {isSpinning || placingBet ? 'Wheel Spinning...' : 'Place Bet and Play'}
+          {feedback ? <p className="muted-text">{feedback}</p> : null}
+          <button
+            className="btn play-btn"
+            type="button"
+            disabled={placingBet || isSpinning || !activeRound || activeRound.status !== 'BETTING'}
+            onClick={handlePlaceBet}
+          >
+            {placingBet ? 'Placing Bet...' : 'Join Current Round'}
           </button>
         </article>
       </section>
 
       <section className="roulette-grid">
         <article className="card outcome-card">
-          <h3>Spin Result</h3>
+          <h3>Latest Result</h3>
           {isSpinning ? (
             <div className="outcome-grid">
-              <p className="muted-text">Wheel is spinning... waiting for the ball to settle.</p>
+              <p className="muted-text">Round resolved. Wheel is animating to winning pocket...</p>
             </div>
           ) : lastResult ? (
             <div className="outcome-grid">
               <div className={`result-badge ${lastResult.winningColor.toLowerCase()}`}>
                 {lastResult.winningNumber} {lastResult.winningColor}
               </div>
-              <p>
-                Bet: {lastResult.betType} {lastResult.betValue}
-              </p>
-              <p>Status: {lastResult.status}</p>
-              <p>Payout: {formatCurrency(lastResult.payout)}</p>
-              <p>Net: {formatCurrency(lastResult.netChange)}</p>
-              <p>Multiplier: {lastResult.multiplier}x</p>
+              <p>Round: {lastResult.roundId}</p>
+              <p>Total Bets: {lastResult.totalBets}</p>
+              <p>Total Wagered: {formatCurrency(lastResult.totalWagered)}</p>
+              <p>Total Payout: {formatCurrency(lastResult.totalPayout)}</p>
             </div>
           ) : (
-            <p className="muted-text">No spin yet. Place your first bet.</p>
+            <p className="muted-text">No results yet. The first round will resolve in one minute.</p>
           )}
         </article>
 
         <article className="card history-card">
-          <h3>Recent Spins</h3>
+          <h3>Last 5 Results</h3>
           <div className="history-list">
-            {history.length === 0 ? (
-              <p className="muted-text">No bets placed yet.</p>
+            {recentResults.length === 0 ? (
+              <p className="muted-text">No completed rounds yet.</p>
             ) : (
-              history.map((item) => (
-                <div key={item.id} className="history-row">
+              recentResults.map((result) => (
+                <div key={result.roundId} className="history-row">
                   <div>
-                    <p className="history-title">
-                      {item.betType} {item.betValue}
-                    </p>
+                    <p className="history-title">Round {result.roundId}</p>
                     <p className="muted-text">
-                      Result: {item.winningNumber} {item.winningColor}
+                      Winning: {result.winningNumber} {result.winningColor}
                     </p>
                   </div>
                   <div className="history-amount">
-                    <span className={item.netChange >= 0 ? 'win' : 'loss'}>{formatCurrency(item.netChange)}</span>
+                    <span>{new Date(result.resolvedAt).toLocaleTimeString()}</span>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </article>
+
+        <article className="card history-card">
+          <h3>My Last 5 Bets</h3>
+          <div className="history-list">
+            {myBets.length === 0 ? (
+              <p className="muted-text">No bets placed yet.</p>
+            ) : (
+              myBets.map((bet) => (
+                <div key={bet.id} className="history-row">
+                  <div>
+                    <p className="history-title">
+                      {bet.status} | {bet.betType} {bet.betValue}
+                    </p>
+                    <p className="muted-text">Round {bet.roundId}</p>
+                  </div>
+                  <div className="history-amount">
+                    {bet.status === 'PENDING' ? (
+                      <span className="muted-text">Pending</span>
+                    ) : (
+                      <span className={(bet.netChange ?? 0) >= 0 ? 'win' : 'loss'}>
+                        {formatCurrency(bet.netChange ?? 0)}
+                      </span>
+                    )}
                   </div>
                 </div>
               ))

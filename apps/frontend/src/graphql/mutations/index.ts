@@ -23,6 +23,7 @@ export const PLACE_BET_MUTATION = gql`
   mutation PlaceBet($gameId: ID!, $amount: Float!, $betType: BetType!, $betValue: String!) {
     placeBet(gameId: $gameId, amount: $amount, betType: $betType, betValue: $betValue) {
       id
+      roundId
       amount
       status
       payout
@@ -33,6 +34,7 @@ export const PLACE_BET_MUTATION = gql`
       winningColor
       multiplier
       createdAt
+      resolvedAt
       gameId
     }
   }

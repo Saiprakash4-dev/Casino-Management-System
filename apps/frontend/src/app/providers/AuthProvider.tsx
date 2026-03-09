@@ -16,7 +16,9 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 export function AuthProvider({ children }: PropsWithChildren) {
   const [user, setUser] = useState<AuthUser | null>(null);
+  const hasToken = Boolean(localStorage.getItem('token'));
   const { loading: meLoading } = useQuery(ME_QUERY, {
+    skip: !hasToken,
     onCompleted: (data) => setUser(data.me),
     onError: () => setUser(null),
   });
@@ -32,6 +34,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const [logoutMutation] = useMutation(LOGOUT_MUTATION, {
     onCompleted: () => {
       localStorage.removeItem('token');
+      localStorage.removeItem('roulette:lastKnownWallet');
       setUser(null);
     },
   });
