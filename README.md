@@ -1,22 +1,38 @@
 # Casino Management System (Monorepo)
 
-A full-stack demo that mirrors a production-style casino platform with:
+This project is a full-stack casino demo focused on a shared live Russian Roulette game with:
 
+- GraphQL API gateway
+- Kafka-backed round result events
+- WebSocket push updates to the UI
 - React + TypeScript frontend
-- GraphQL API Gateway (BFF pattern)
-- Domain microservices (Auth, Game, Wallet, Notification)
-- Shared packages for types/config/Kafka helpers
-- Docker + Kafka local infrastructure
 
-## Repository Structure
+## Project Architecture
+
+### High-level flow
+
+```txt
+Frontend (React)
+  ├─ GraphQL (login, placeBet, fallback snapshot)
+  └─ WebSocket /realtime (live round/result/wallet/bet updates)
+                │
+                ▼
+      API Gateway (GraphQL + Realtime)
+        ├─ Round engine (minute rounds, settlement)
+        ├─ Session + wallet + bet state (in memory)
+        ├─ Kafka producer (roundResolved, betPlaced)
+        └─ Kafka consumer (roundResolved -> push to clients)
+```
+
+### Repository structure
 
 ```txt
 apps/frontend                 # React UI
-services/api-gateway          # GraphQL BFF
-services/auth-service         # login, JWT, roles
-services/game-service         # game catalog, bets, game events
-services/wallet-service       # balance, credits, transactions
-services/notification-service # consume events, websocket notifications
+services/api-gateway          # GraphQL BFF + roulette engine + websocket server
+services/auth-service         # scaffold service
+services/game-service         # scaffold service
+services/wallet-service       # scaffold service
+services/notification-service # scaffold service
 packages/shared-types         # shared TS models
 packages/config               # env + logger helpers
 packages/kafka-client         # producer/consumer wrappers
@@ -25,121 +41,104 @@ infrastructure/kafka          # topic bootstrap scripts
 scripts/                      # local helper scripts
 ```
 
----
+## Tech Stack
 
-## Run Locally (Fastest Path)
+- Frontend: React 18, TypeScript, Vite, Apollo Client
+- Backend: Node.js, TypeScript, Express, GraphQL (`graphql` package)
+- Realtime: native WebSocket (`ws`) at `/realtime`
+- Event streaming: Kafka (`kafkajs`)
+- Infra: Docker Compose, Zookeeper, Kafka
+- Testing: Jest + React Testing Library
 
-### 1) Prerequisites
+## Tools Required
 
 - Node.js 20+
 - npm 10+
-- Docker + Docker Compose (for full stack)
+- Docker Desktop (includes Docker Compose)
 
-### 2) Setup
+## Environment Variables
+
+Copy `.env.example` to `.env` for local runs:
 
 ```bash
 cp .env.example .env
-npm install
 ```
 
-### 3) Run only frontend (UI development)
+Important frontend env vars:
 
-```bash
-npm run dev
-```
+- `VITE_GRAPHQL_URL` (default: `http://localhost:4000/graphql`)
+- `VITE_REALTIME_URL` (optional, default derived from `VITE_GRAPHQL_URL` as `/realtime`)
 
-Open: `http://localhost:5173`
+## How To Run
 
-### 4) Build frontend
-
-```bash
-npm run build
-```
-
----
-
-## Run Full Stack Locally (Docker)
-
-This starts Kafka, Zookeeper, API gateway, and all microservices:
+### Option A: Full stack with Docker (recommended)
 
 ```bash
 docker compose up --build
 ```
 
-Services:
+Endpoints:
 
-- API Gateway: `http://localhost:4000`
+- Frontend: `http://localhost:5173` (if you run it locally with `npm run dev`)
+- API Gateway GraphQL: `http://localhost:4000/graphql`
+- API Gateway WebSocket: `ws://localhost:4000/realtime`
 - Auth Service: `http://localhost:4001`
 - Game Service: `http://localhost:4002`
 - Wallet Service: `http://localhost:4003`
 - Notification Service: `http://localhost:4004`
 
-Stop everything:
+Stop:
 
 ```bash
 docker compose down
 ```
 
----
+### Option B: Frontend only (UI development)
 
-## Free Deployment Guide (Recommended)
+```bash
+npm install
+npm run dev
+```
 
-You can deploy this **for free** using:
+Open `http://localhost:5173`
 
-- **Vercel** (frontend)
-- **Render** (backend services + gateway)
-- **Upstash Kafka** (free Kafka cluster)
+## How To Play The Game
 
-> Note: free tiers sleep after inactivity and have usage limits, but this is perfect for portfolio demos.
+1. Open the app and sign in.
+2. Go to `Russian Roulette` page.
+3. Wait for an active round (`BETTING` state).
+4. Choose bet type:
+   - `NUMBER` (0 to 36)
+   - `COLOR` (`RED`, `BLACK`, `GREEN`)
+   - `ODD_EVEN` (`ODD`, `EVEN`)
+5. Enter stake and click `Join Current Round`.
+6. The wheel spins when round resolves.
+7. Payout rules:
+   - NUMBER hit: `36x`
+   - COLOR red/black: `2x`
+   - COLOR green: `36x`
+   - ODD_EVEN: `2x`
+8. Wallet and bet history update live via WebSocket.
 
-### A) Deploy Frontend to Vercel (Free)
+## Demo Credentials
 
-1. Push repo to GitHub.
-2. In Vercel, import the repo.
-3. Configure:
-   - **Root Directory**: `apps/frontend`
-   - **Build Command**: `npm run build --workspace apps/frontend`
-   - **Output Directory**: `apps/frontend/dist`
-4. Add env var in Vercel (example):
-   - `VITE_GRAPHQL_URL=https://<your-gateway-url>/graphql`
-5. Deploy.
+- `admin@casino.dev` / `password`
+- `player@casino.dev` / `password`
 
-### B) Deploy Services to Render (Free)
+## Scripts
 
-Create one Render Web Service per backend:
+From repo root:
 
-- `services/api-gateway`
-- `services/auth-service`
-- `services/game-service`
-- `services/wallet-service`
-- `services/notification-service`
+- `npm run dev` - frontend dev server
+- `npm run build` - frontend production build
+- `npm run typecheck` - frontend type-check
+- `npm run test` - frontend Jest tests
 
-For each service:
+Frontend workspace directly:
 
-- Runtime: Node
-- Build command: `npm install`
-- Start command: `node src/server.ts` (replace with your transpiled command once you add TS build pipeline)
-- Add environment variables from `.env.example`
-
-### C) Provision Kafka (Upstash Free)
-
-1. Create a free Upstash Kafka cluster.
-2. Copy broker credentials.
-3. Set service env vars:
-   - `KAFKA_BROKER`
-   - `KAFKA_USERNAME`
-   - `KAFKA_PASSWORD`
-4. Update producer/consumer code to use authenticated broker settings.
-
-### D) Wire everything together
-
-1. Put backend public URLs into API Gateway config.
-2. Put Gateway URL into frontend env (`VITE_GRAPHQL_URL`).
-3. Redeploy frontend and gateway.
-
----
+- `npm run test --workspace apps/frontend`
 
 ## Notes
 
-- This repo is an intentionally clean scaffold; extend each service with persistent DBs, robust auth, retries, observability, and CI/CD.
-- Keep all UI work under `apps/frontend` (root-level legacy UI files were removed to avoid duplicate entry points).
+- Current wallet/bet/session data is in-memory inside API Gateway. Restarting the gateway resets runtime state.
+- Kafka is used for round result/bet event distribution; WebSocket is used for client push updates.

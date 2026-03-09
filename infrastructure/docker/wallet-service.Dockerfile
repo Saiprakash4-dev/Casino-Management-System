@@ -1,4 +1,8 @@
 FROM node:20-alpine
 WORKDIR /app
-COPY . .
-CMD ["node", "-e", "console.log('Build wallet-service image from monorepo root')"]
+COPY package*.json ./
+COPY services/wallet-service services/wallet-service
+COPY packages packages
+RUN npm install
+EXPOSE 4003
+CMD ["npm", "start", "--workspace", "services/wallet-service"]

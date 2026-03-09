@@ -1,4 +1,8 @@
 FROM node:20-alpine
 WORKDIR /app
-COPY . .
-CMD ["node", "-e", "console.log('Build notification-service image from monorepo root')"]
+COPY package*.json ./
+COPY services/notification-service services/notification-service
+COPY packages packages
+RUN npm install
+EXPOSE 4004
+CMD ["npm", "start", "--workspace", "services/notification-service"]
